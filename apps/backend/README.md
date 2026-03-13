@@ -31,6 +31,12 @@
 $ pnpm install
 ```
 
+Copy `.env.example` to `.env` and set `ENCRYPTION_KEY` (required). Use a 32-byte key in hex (64 characters). Generate one with:
+
+```bash
+openssl rand -hex 32
+```
+
 ## Compile and run the project
 
 ```bash

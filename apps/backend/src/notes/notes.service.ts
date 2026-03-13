@@ -5,6 +5,7 @@ import type { Counter } from 'prom-client';
 import type { SecureNote } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 import { CACHE_KEY_PREFIX, CACHE_MAX_TTL_SEC } from '../constants';
+import { EncryptionService } from '../encryption/encryption.service';
 import type { CreateNoteDto } from './dto/create-note.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
@@ -20,6 +21,7 @@ export class NotesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
+    private readonly encryptionService: EncryptionService,
     @InjectMetric('note_read_total') private readonly noteReadTotal: Counter<string>,
     @InjectMetric('note_create_total') private readonly noteCreateTotal: Counter<string>,
   ) {}
@@ -38,7 +40,8 @@ export class NotesService {
             }
           })
           .catch(() => {});
-        return cached;
+        const decrypted = { ...cached, content: this.encryptionService.decrypt(cached.content) };
+        return decrypted;
       }
     }
 
@@ -69,7 +72,7 @@ export class NotesService {
       }
     }
     this.noteReadTotal.inc({ source: 'postgres' });
-    return note;
+    return { ...note, content: this.encryptionService.decrypt(note.content) };
   }
 
   private getCacheTtl(note: SecureNote): number {
@@ -117,7 +120,7 @@ export class NotesService {
   async create(dto: CreateNoteDto): Promise<SecureNote> {
     const data: Prisma.SecureNoteCreateInput = {
       slug: generateSlug(),
-      content: dto.content,
+      content: this.encryptionService.encrypt(dto.content),
       expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
       maxViews: dto.maxViews ?? undefined,
     };

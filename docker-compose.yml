@@ -33,6 +33,9 @@ services:
       REDIS_URL: redis://redis:6379
       JWT_SECRET: dev-secret
       APP_ENV: local
+      CORS_ORIGIN: "http://localhost:3001"
+      # Required. Override in production. Generate with: openssl rand -hex 32
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
 
   frontend:
     build: ./apps/frontend
