@@ -65,6 +65,8 @@ $ pnpm run test:cov
 
 ## Deployment
 
+**Render:** Set the Start Command to `pnpm run start:prod`. This runs `prisma migrate deploy` before starting the app so the database schema is applied on each deploy. Ensure `DATABASE_URL` and `ENCRYPTION_KEY` are set in the service Environment.
+
 When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
 
 If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:

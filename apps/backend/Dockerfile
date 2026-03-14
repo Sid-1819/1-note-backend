@@ -18,6 +18,8 @@ RUN pnpm install --frozen-lockfile
 # Copy application code
 COPY . .
 
+RUN pnpm run build
+
 EXPOSE 3000
 
-CMD ["pnpm", "run", "start:dev"]
+CMD ["pnpm", "run", "start:prod"]
