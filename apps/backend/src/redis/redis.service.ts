@@ -4,6 +4,11 @@ import {
   RATE_LIMIT_KEY_PREFIX,
   RATE_LIMIT_MAX_REQUESTS,
   RATE_LIMIT_WINDOW_SEC,
+  RATE_LIMIT_CLIENT_KEY_PREFIX,
+  RATE_LIMIT_CREATE_MINUTE_WINDOW_SEC,
+  RATE_LIMIT_CREATE_MINUTE_MAX,
+  RATE_LIMIT_CREATE_DAILY_WINDOW_SEC,
+  RATE_LIMIT_CREATE_DAILY_MAX,
 } from '../constants';
 
 @Injectable()
@@ -72,6 +77,27 @@ export class RedisService implements OnModuleDestroy {
         await this.client.expire(key, RATE_LIMIT_WINDOW_SEC);
       }
       return count <= RATE_LIMIT_MAX_REQUESTS;
+    } catch {
+      return true;
+    }
+  }
+
+  /**
+   * Create-note rate limit: 3 per minute and 10 per 24h per client (IP + user-agent hash).
+   * Returns true if allowed, false if over either limit.
+   */
+  async checkCreateRateLimit(clientHash: string): Promise<boolean> {
+    if (!this.client) return true;
+    const keyMinute = `${RATE_LIMIT_CLIENT_KEY_PREFIX}${clientHash}:1m`;
+    const keyDay = `${RATE_LIMIT_CLIENT_KEY_PREFIX}${clientHash}:24h`;
+    try {
+      const [countMinute, countDay] = await Promise.all([
+        this.client.incr(keyMinute),
+        this.client.incr(keyDay),
+      ]);
+      if (countMinute === 1) await this.client.expire(keyMinute, RATE_LIMIT_CREATE_MINUTE_WINDOW_SEC);
+      if (countDay === 1) await this.client.expire(keyDay, RATE_LIMIT_CREATE_DAILY_WINDOW_SEC);
+      return countMinute <= RATE_LIMIT_CREATE_MINUTE_MAX && countDay <= RATE_LIMIT_CREATE_DAILY_MAX;
     } catch {
       return true;
     }
