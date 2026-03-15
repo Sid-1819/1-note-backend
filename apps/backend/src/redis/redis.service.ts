@@ -9,6 +9,9 @@ import {
   RATE_LIMIT_CREATE_MINUTE_MAX,
   RATE_LIMIT_CREATE_DAILY_WINDOW_SEC,
   RATE_LIMIT_CREATE_DAILY_MAX,
+  WRONG_PASSWORD_KEY_PREFIX,
+  WRONG_PASSWORD_WINDOW_SEC,
+  WRONG_PASSWORD_MAX_ATTEMPTS,
 } from '../constants';
 
 @Injectable()
@@ -100,6 +103,37 @@ export class RedisService implements OnModuleDestroy {
       return countMinute <= RATE_LIMIT_CREATE_MINUTE_MAX && countDay <= RATE_LIMIT_CREATE_DAILY_MAX;
     } catch {
       return true;
+    }
+  }
+
+  /**
+   * Returns true if wrong-password attempts for this slug have exceeded the limit (should return 429).
+   */
+  async isWrongPasswordLimitExceeded(slug: string): Promise<boolean> {
+    if (!this.client) return false;
+    const key = `${WRONG_PASSWORD_KEY_PREFIX}${slug}`;
+    try {
+      const raw = await this.client.get(key);
+      const count = raw ? parseInt(raw, 10) : 0;
+      return count >= WRONG_PASSWORD_MAX_ATTEMPTS;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Record a wrong password attempt for this slug. Call only when password verification failed.
+   */
+  async recordWrongPasswordAttempt(slug: string): Promise<void> {
+    if (!this.client) return;
+    const key = `${WRONG_PASSWORD_KEY_PREFIX}${slug}`;
+    try {
+      const count = await this.client.incr(key);
+      if (count === 1) {
+        await this.client.expire(key, WRONG_PASSWORD_WINDOW_SEC);
+      }
+    } catch {
+      // Degrade silently
     }
   }
 

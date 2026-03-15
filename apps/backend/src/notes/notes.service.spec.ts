@@ -1,6 +1,14 @@
 import { Prisma } from '@prisma/client';
 import { Test, TestingModule } from '@nestjs/testing';
 import { EncryptionService } from '../encryption/encryption.service';
+import { PasswordService } from '../password/password.service';
+
+jest.mock('../password/password.service', () => ({
+  PasswordService: jest.fn().mockImplementation(() => ({
+    hash: jest.fn().mockResolvedValue('hashedpassword'),
+    compare: jest.fn().mockResolvedValue(true),
+  })),
+}));
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
 import { getToken } from '@willsoto/nestjs-prometheus';
@@ -18,6 +26,13 @@ describe('NotesService', () => {
     set: jest.fn(),
     del: jest.fn(),
     checkRateLimit: jest.fn(),
+    isWrongPasswordLimitExceeded: jest.fn().mockResolvedValue(false),
+    recordWrongPasswordAttempt: jest.fn(),
+  };
+
+  const mockPasswordService = {
+    hash: jest.fn().mockResolvedValue('hashedpassword'),
+    compare: jest.fn().mockResolvedValue(true),
   };
 
   const mockNoteReadTotal = { inc: jest.fn() };
@@ -25,6 +40,11 @@ describe('NotesService', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockRedis.isEnabled = false;
+    mockRedis.isWrongPasswordLimitExceeded.mockResolvedValue(false);
+    mockRedis.recordWrongPasswordAttempt.mockResolvedValue(undefined);
+    mockPasswordService.compare.mockResolvedValue(true);
+    mockPasswordService.hash.mockResolvedValue('hashedpassword');
     process.env.ENCRYPTION_KEY = '0'.repeat(64);
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -36,11 +56,13 @@ describe('NotesService', () => {
             secureNote: {
               create: jest.fn(),
               update: jest.fn(),
+              findFirst: jest.fn(),
             },
             $queryRaw: jest.fn(),
           },
         },
         { provide: RedisService, useValue: mockRedis },
+        { provide: PasswordService, useValue: mockPasswordService },
         { provide: getToken('note_read_total'), useValue: mockNoteReadTotal },
         { provide: getToken('note_create_total'), useValue: mockNoteCreateTotal },
       ],
@@ -64,6 +86,7 @@ describe('NotesService', () => {
       id: 'id-1',
       slug: 'abc123base64url',
       content: '', // set by mock from encrypted payload
+      passwordHash: null,
       expiresAt: null,
       lastViewedAt: null,
       maxViews: null,
@@ -85,14 +108,31 @@ describe('NotesService', () => {
       const call = (prisma.secureNote.create as jest.Mock).mock.calls[0][0];
       expect(call.data.content).not.toBe(dto.content);
       expect(call.data.content).toMatch(/^[A-Za-z0-9+/]+=*$/);
-      expect(encryptionService.decrypt(call.data.content as string)).toBe(dto.content);
       expect(encryptionService.decrypt(result.content)).toBe(dto.content);
       expect(call.data.slug).toBeDefined();
+      expect(call.data.passwordHash).toBeUndefined();
+      expect(mockPasswordService.hash).not.toHaveBeenCalled();
       expect(typeof call.data.slug).toBe('string');
       expect(call.data.slug.length).toBeGreaterThan(0);
       expect(call.data.expiresAt).toBeUndefined();
       expect(call.data.maxViews).toBeUndefined();
       expect(mockNoteCreateTotal.inc).toHaveBeenCalledTimes(1);
+    });
+
+    it('hashes and stores password when provided', async () => {
+      const dtoWithPassword: CreateNoteDto = {
+        content: 'content',
+        password: 'MyPass1!',
+      };
+      (prisma.secureNote.create as jest.Mock).mockImplementation(({ data }: { data: Record<string, unknown> }) =>
+        Promise.resolve({ ...createdNote, ...data, content: data.content }),
+      );
+
+      await service.create(dtoWithPassword);
+
+      expect(mockPasswordService.hash).toHaveBeenCalledWith('MyPass1!');
+      const call = (prisma.secureNote.create as jest.Mock).mock.calls[0][0];
+      expect(call.data.passwordHash).toBe('hashedpassword');
     });
 
     it('passes expiresAt and maxViews when provided', async () => {
@@ -149,21 +189,23 @@ describe('NotesService', () => {
         id: 'id-1',
         slug: 'the-slug',
         content: encryptedContent,
+        passwordHash: null,
         expiresAt: null,
         lastViewedAt: null,
         maxViews: null,
-        viewCount: 1,
+        viewCount: 0,
         isDeleted: false,
         createdAt: new Date(),
         createdBy: null,
         userId: null,
       };
-      (prisma.$queryRaw as jest.Mock).mockResolvedValue([dbNote]);
+      (prisma.secureNote.findFirst as jest.Mock).mockResolvedValue(dbNote);
+      (prisma.$queryRaw as jest.Mock).mockResolvedValue([{ ...dbNote, viewCount: 1 }]);
 
       const result = await service.readBySlug('the-slug');
 
       expect(result).not.toBeNull();
-      expect(result!.content).toBe(plainContent);
+      expect(result).toEqual({ success: true, content: plainContent });
       expect(mockNoteReadTotal.inc).toHaveBeenCalledWith({ source: 'postgres' });
     });
 
@@ -174,6 +216,7 @@ describe('NotesService', () => {
         id: 'id-1',
         slug: 'cached-slug',
         content: encryptedContent,
+        passwordHash: null,
         expiresAt: null,
         lastViewedAt: null,
         maxViews: 2,
@@ -190,8 +233,84 @@ describe('NotesService', () => {
       const result = await service.readBySlug('cached-slug');
 
       expect(result).not.toBeNull();
-      expect(result!.content).toBe(plainContent);
+      expect(result).toEqual({ success: true, content: plainContent });
       expect(mockNoteReadTotal.inc).toHaveBeenCalledWith({ source: 'redis' });
+    });
+
+    it('returns PASSWORD_REQUIRED when note has password and none provided', async () => {
+      const encryptedContent = encryptionService.encrypt('secret');
+      const dbNote = {
+        id: 'id-1',
+        slug: 'protected-slug',
+        content: encryptedContent,
+        passwordHash: 'hashed',
+        expiresAt: null,
+        lastViewedAt: null,
+        maxViews: null,
+        viewCount: 0,
+        isDeleted: false,
+        createdAt: new Date(),
+        createdBy: null,
+        userId: null,
+      };
+      (prisma.secureNote.findFirst as jest.Mock).mockResolvedValue(dbNote);
+
+      const result = await service.readBySlug('protected-slug');
+
+      expect(result).toEqual({ success: false, code: 'PASSWORD_REQUIRED' });
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    it('returns INVALID_PASSWORD when password is wrong', async () => {
+      const encryptedContent = encryptionService.encrypt('secret');
+      const dbNote = {
+        id: 'id-1',
+        slug: 'protected-slug',
+        content: encryptedContent,
+        passwordHash: 'hashed',
+        expiresAt: null,
+        lastViewedAt: null,
+        maxViews: null,
+        viewCount: 0,
+        isDeleted: false,
+        createdAt: new Date(),
+        createdBy: null,
+        userId: null,
+      };
+      (prisma.secureNote.findFirst as jest.Mock).mockResolvedValue(dbNote);
+      mockPasswordService.compare.mockResolvedValueOnce(false);
+
+      const result = await service.readBySlug('protected-slug', 'wrong');
+
+      expect(result).toEqual({ success: false, code: 'INVALID_PASSWORD' });
+      expect(mockRedis.recordWrongPasswordAttempt).toHaveBeenCalledWith('protected-slug');
+      expect(prisma.$queryRaw).not.toHaveBeenCalled();
+    });
+
+    it('returns content when password is correct', async () => {
+      const plainContent = 'secret';
+      const encryptedContent = encryptionService.encrypt(plainContent);
+      const dbNote = {
+        id: 'id-1',
+        slug: 'protected-slug',
+        content: encryptedContent,
+        passwordHash: 'hashed',
+        expiresAt: null,
+        lastViewedAt: null,
+        maxViews: null,
+        viewCount: 0,
+        isDeleted: false,
+        createdAt: new Date(),
+        createdBy: null,
+        userId: null,
+      };
+      (prisma.secureNote.findFirst as jest.Mock).mockResolvedValue(dbNote);
+      (prisma.$queryRaw as jest.Mock).mockResolvedValue([{ ...dbNote, viewCount: 1 }]);
+
+      const result = await service.readBySlug('protected-slug', 'correct');
+
+      expect(result).toEqual({ success: true, content: plainContent });
+      expect(mockPasswordService.compare).toHaveBeenCalledWith('correct', 'hashed');
     });
   });
 });

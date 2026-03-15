@@ -3,6 +3,7 @@ import {
   IsOptional,
   IsString,
   MaxLength,
+  MinLength,
   IsDateString,
   IsInt,
   Min,
@@ -15,6 +16,9 @@ import { Transform } from 'class-transformer';
 const CONTENT_MAX_LENGTH = 1_048_576; // 1MB
 const MAX_VIEWS_CAP = 1000;
 
+const PASSWORD_MIN_LENGTH = 8;
+const PASSWORD_MAX_LENGTH = 128;
+
 function isFutureDate(value: unknown): boolean {
   if (value == null || value === '') return true;
   const date = new Date(value as string);
@@ -25,6 +29,27 @@ const IsFutureDate = () =>
   ValidateBy({
     name: 'isFutureDate',
     validator: { validate: isFutureDate, defaultMessage: () => 'expiresAt must be a future date' },
+  });
+
+function isStrongPassword(value: unknown): boolean {
+  if (typeof value !== 'string') return false;
+  const s = value;
+  if (s.length < PASSWORD_MIN_LENGTH || s.length > PASSWORD_MAX_LENGTH) return false;
+  if (!/[a-z]/.test(s)) return false;
+  if (!/[A-Z]/.test(s)) return false;
+  if (!/[0-9]/.test(s)) return false;
+  if (!/[!@#$%^&*(),.?":{}|<>_\-+=[\]\\;/'`~]/.test(s)) return false;
+  return true;
+}
+
+const IsStrongPassword = () =>
+  ValidateBy({
+    name: 'isStrongPassword',
+    validator: {
+      validate: isStrongPassword,
+      defaultMessage: () =>
+        `password must be ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} characters with at least one lowercase, one uppercase, one digit, and one symbol`,
+    },
   });
 
 export class CreateNoteDto {
@@ -48,4 +73,13 @@ export class CreateNoteDto {
   @Max(MAX_VIEWS_CAP, { message: `maxViews must not exceed ${MAX_VIEWS_CAP}` })
   @Transform(({ value }) => (value != null ? Number(value) : value))
   maxViews?: number;
+
+  @IsOptional()
+  @IsString()
+  @ValidateIf((_o, v) => v != null && v !== '')
+  @MinLength(PASSWORD_MIN_LENGTH, { message: `password must be at least ${PASSWORD_MIN_LENGTH} characters` })
+  @MaxLength(PASSWORD_MAX_LENGTH, { message: `password must not exceed ${PASSWORD_MAX_LENGTH} characters` })
+  @IsStrongPassword()
+  @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
+  password?: string;
 }

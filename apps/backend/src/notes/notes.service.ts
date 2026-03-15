@@ -6,6 +6,7 @@ import type { SecureNote } from '@prisma/client';
 import { Prisma } from '@prisma/client';
 import { CACHE_KEY_PREFIX, CACHE_MAX_TTL_SEC } from '../constants';
 import { EncryptionService } from '../encryption/encryption.service';
+import { PasswordService } from '../password/password.service';
 import type { CreateNoteDto } from './dto/create-note.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { RedisService } from '../redis/redis.service';
@@ -16,17 +17,62 @@ function generateSlug(): string {
   return randomBytes(SLUG_BYTES).toString('base64url');
 }
 
+export type ReadNoteResult =
+  | { success: true; content: string }
+  | { success: false; code: 'PASSWORD_REQUIRED' | 'INVALID_PASSWORD' | 'WRONG_PASSWORD_LIMIT' }
+  | null;
+
 @Injectable()
 export class NotesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly redis: RedisService,
     private readonly encryptionService: EncryptionService,
+    private readonly passwordService: PasswordService,
     @InjectMetric('note_read_total') private readonly noteReadTotal: Counter<string>,
     @InjectMetric('note_create_total') private readonly noteCreateTotal: Counter<string>,
   ) {}
 
-  async readBySlug(slug: string): Promise<SecureNote | null> {
+  /**
+   * Find note by slug without incrementing view count. Returns null if not found or expired/deleted/over maxViews.
+   */
+  private async findNoteBySlug(slug: string): Promise<SecureNote | null> {
+    const cacheKey = `${CACHE_KEY_PREFIX}${slug}`;
+    if (this.redis.isEnabled) {
+      const cached = await this.redis.get<SecureNote>(cacheKey);
+      if (cached) return cached;
+    }
+    const note = await this.prisma.secureNote.findFirst({
+      where: {
+        slug,
+        isDeleted: false,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+    });
+    if (!note) return null;
+    if (note.maxViews != null && note.viewCount >= note.maxViews) return null;
+    return note;
+  }
+
+  async readBySlug(slug: string, password?: string): Promise<ReadNoteResult> {
+    const note = await this.findNoteBySlug(slug);
+    if (!note) return null;
+
+    if (note.passwordHash) {
+      if (password === undefined || password === '') {
+        return { success: false, code: 'PASSWORD_REQUIRED' };
+      }
+      const limitExceeded = await this.redis.isWrongPasswordLimitExceeded(slug);
+      if (limitExceeded) {
+        return { success: false, code: 'WRONG_PASSWORD_LIMIT' };
+      }
+      const valid = await this.passwordService.compare(password, note.passwordHash);
+      if (!valid) {
+        await this.redis.recordWrongPasswordAttempt(slug);
+        return { success: false, code: 'INVALID_PASSWORD' };
+      }
+    }
+
     const cacheKey = `${CACHE_KEY_PREFIX}${slug}`;
 
     if (this.redis.isEnabled) {
@@ -35,13 +81,11 @@ export class NotesService {
         this.noteReadTotal.inc({ source: 'redis' });
         this.incrementViewCountOnly(slug)
           .then(({ invalidate }) => {
-            if (invalidate) {
-              return this.redis.del(cacheKey);
-            }
+            if (invalidate) return this.redis.del(cacheKey);
           })
           .catch(() => {});
-        const decrypted = { ...cached, content: this.encryptionService.decrypt(cached.content) };
-        return decrypted;
+        const content = this.encryptionService.decrypt(cached.content);
+        return { success: true, content };
       }
     }
 
@@ -54,25 +98,24 @@ export class NotesService {
         AND ("maxViews" IS NULL OR "viewCount" < "maxViews")
       RETURNING *
     `;
-    const note = rows[0] ?? null;
-    if (!note) return null;
+    const updated = rows[0] ?? null;
+    if (!updated) return null;
 
     if (this.redis.isEnabled) {
-      const ttl = this.getCacheTtl(note);
-      await this.redis.set(cacheKey, note, ttl);
+      const ttl = this.getCacheTtl(updated);
+      await this.redis.set(cacheKey, updated, ttl);
     }
 
-    if (note.maxViews != null && note.viewCount >= note.maxViews) {
+    if (updated.maxViews != null && updated.viewCount >= updated.maxViews) {
       await this.prisma.secureNote.update({
-        where: { id: note.id },
+        where: { id: updated.id },
         data: { isDeleted: true },
       });
-      if (this.redis.isEnabled) {
-        await this.redis.del(cacheKey);
-      }
+      if (this.redis.isEnabled) await this.redis.del(cacheKey);
     }
     this.noteReadTotal.inc({ source: 'postgres' });
-    return { ...note, content: this.encryptionService.decrypt(note.content) };
+    const content = this.encryptionService.decrypt(updated.content);
+    return { success: true, content };
   }
 
   private getCacheTtl(note: SecureNote): number {
@@ -118,9 +161,15 @@ export class NotesService {
   }
 
   async create(dto: CreateNoteDto): Promise<SecureNote> {
+    const passwordHash =
+      dto.password && dto.password.trim() !== ''
+        ? await this.passwordService.hash(dto.password)
+        : undefined;
+
     const data: Prisma.SecureNoteCreateInput = {
       slug: generateSlug(),
       content: this.encryptionService.encrypt(dto.content),
+      passwordHash: passwordHash ?? undefined,
       expiresAt: dto.expiresAt ? new Date(dto.expiresAt) : undefined,
       maxViews: dto.maxViews ?? undefined,
     };

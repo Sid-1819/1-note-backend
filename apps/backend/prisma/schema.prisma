@@ -29,6 +29,7 @@ model SecureNote {
   id           String    @id @default(uuid())
   slug         String    @unique
   content      String
+  passwordHash String?
   expiresAt    DateTime?
   lastViewedAt DateTime?
   maxViews     Int?
