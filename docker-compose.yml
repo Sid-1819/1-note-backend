@@ -37,17 +37,6 @@ services:
       # Required. Override in production. Generate with: openssl rand -hex 32
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-0000000000000000000000000000000000000000000000000000000000000000}
 
-  frontend:
-    build: ./apps/frontend
-    container_name: secureshare-frontend
-    ports:
-      - "3001:3001"
-    depends_on:
-      - backend
-    environment:
-      PORT: 3001
-      NEXT_PUBLIC_API_URL: http://localhost:3000
-
   prometheus:
     image: prom/prometheus:latest
     container_name: secureshare-prometheus
