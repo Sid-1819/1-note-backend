@@ -9,6 +9,7 @@ async function bootstrap() {
     'http://localhost:3001',
     'http://localhost:8080',
     'https://one-note-wine.vercel.app',
+    'https://1note.siddheshshirdhankar.com',
   ];
   app.enableCors({
     origin: (origin, callback) => {
