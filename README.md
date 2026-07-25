@@ -51,6 +51,7 @@ The API listens on `http://localhost:3000` by default.
 | `REDIS_URL` | Yes | Redis connection string |
 | `ENCRYPTION_KEY` | Yes | 32-byte key (64 hex or 44 base64 chars) |
 | `PUBLIC_APP_URL` | No | Base URL for secret links in API responses |
+| `CORS_ORIGIN` | No | Browser CORS: `*` (default) allows any origin for `@getsecret/sdk`; or comma-separated origin list |
 | `PORT` | No | HTTP port (default `3000`) |
 
 See [`.env.example`](.env.example) for defaults.
